@@ -191,6 +191,8 @@ RM_PASSWORD='xxxxxx' ./rm-koreader-heal.sh   # 推荐
 
 `-p` 会把密码暴露在进程列表里，**不推荐**。
 
+脚本可安全用于非交互环境（cron、launchd、CI、管道、编辑器任务）。连接探测走「只判断能不能连上、绝不阻塞等密码」的路径：已提供密码时交给 `SSH_ASKPASS`，没有密码时用 `BatchMode` 快速失败，再转交互提示或直接报错退出。
+
 ## 排错
 
 | 现象 | 原因 / 处理 |
@@ -201,6 +203,7 @@ RM_PASSWORD='xxxxxx' ./rm-koreader-heal.sh   # 推荐
 | `设备上没找到 KOReader 目录` | 这台设备还没装 KOReader，或装法不是 `/home/root/koreader` |
 | 修复后长按中键还是没反应 | 把设备**重启一次**；再跑 `--check` 确认 `button-listen` 是 `enabled/active` |
 | 根分区满了导致注册失败 | 根分区只有约 228MB。清点 `/etc` 下的临时文件，或把 KoReader 相关的都放在 `/home` |
+| 卡在 `root@...` 的密码提示直到超时 | 非交互环境跑、且既没公钥也没设 `RM_PASSWORD`。设 `RM_PASSWORD='xxx'`，或先跑一次 `--install-key` |
 
 ## 环境要求
 

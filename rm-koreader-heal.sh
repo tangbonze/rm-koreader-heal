@@ -33,7 +33,7 @@
 
 set -u
 
-VERSION="1.0.0"
+VERSION="1.0.1"
 PROG="$(basename "$0")"
 
 # ---------- 可调默认值 -------------------------------------------------------
@@ -356,6 +356,7 @@ build_ssh_opts() {
 ASKPASS_FILE=""
 setup_password_askpass() {
   # 密码通过环境变量交给 askpass 小程序，临时文件里**不含密码**
+  [ -n "$ASKPASS_FILE" ] && return 0        # 幂等：已装好就别重复建文件
   ASKPASS_FILE="$(mktemp -t rm-koreader-heal-askpass)"
   TMP_FILES="$TMP_FILES $ASKPASS_FILE"
   {
@@ -389,6 +390,23 @@ prompt_password() {
 ssh_run() {
   # shellcheck disable=SC2086
   ssh $SSH_OPTS -p "$RM_PORT" "$RM_USER@$DEV_HOST" "$@" < /dev/null
+}
+
+# 探测式连接：只判断「能不能连上」，绝不阻塞等密码。
+#
+# 为什么要单独一个函数：ssh 在没有任何认证手段时，会打开 /dev/tty 等待用户
+# 输入密码。若脚本跑在非交互环境（cron / launchd / CI / agent 管道），
+# 这次 ssh 会一直挂到被超时杀掉，而不是干净地返回失败。
+#
+# 做法：
+#   - 已装 askpass（RM_PASSWORD 已给出）→ 正常连，让 askpass 供密码；
+#   - 没有密码 → 加 BatchMode=yes，让 ssh 在公钥失败后立刻返回，
+#     而不是弹出密码提示；调用方随后再走 prompt_password 拿密码。
+ssh_probe() {
+  local extra=""
+  [ -n "$ASKPASS_FILE" ] || extra="-o BatchMode=yes"
+  # shellcheck disable=SC2086
+  ssh $SSH_OPTS $extra -p "$RM_PORT" "$RM_USER@$DEV_HOST" 'echo READY' < /dev/null 2>&1
 }
 
 # 把本地脚本 scp 到设备再执行（脚本末尾自删）。避免多行管道与引号地狱。
@@ -751,7 +769,12 @@ run_once() {
   # ---- 2. 连接与鉴权
   printf '  [2/5] 连接与鉴权\n'
   build_ssh_opts
-  pre="$(ssh_run 'echo READY' 2>&1)"
+
+  # 已经拿到密码（RM_PASSWORD / 配置文件）就先把 askpass 装上，
+  # 让第一次探测就能直接认证通过，不必多跑一轮失败。
+  [ -n "$PASSWORD" ] && setup_password_askpass
+
+  pre="$(ssh_probe)"
   if ! printf '%s' "$pre" | grep -q READY; then
     prompt_password
     setup_password_askpass
@@ -924,7 +947,8 @@ do_install_key() {
   fi
 
   build_ssh_opts
-  if ! ssh_run 'echo READY' >/dev/null 2>&1; then
+  [ -n "$PASSWORD" ] && setup_password_askpass
+  if ! ssh_probe | grep -q READY; then
     prompt_password
     setup_password_askpass
     ssh_run 'echo READY' >/dev/null 2>&1 || die "SSH 登录失败，无法安装公钥"
@@ -982,7 +1006,7 @@ do_watch() {
     if [ "$DEV_HOST" != "$auth_host" ]; then
       build_ssh_opts
       sess="公钥免密"
-      if ! ssh_run 'echo READY' >/dev/null 2>&1; then
+      if ! ssh_probe | grep -q READY; then
         if [ -z "$PASSWORD" ] && [ ! -t 0 ]; then
           warn "$DEV_HOST 需要密码但无法交互输入；请先跑 --install-key，或设置 RM_PASSWORD"
           sleep "$WATCH_INTERVAL"; continue
